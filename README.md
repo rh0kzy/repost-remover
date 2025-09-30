@@ -1,14 +1,25 @@
 # TikTok Repost Remover
 
-A Python tool that automatically detects and removes reposts from your TikTok account.
+A Python tool that automatically detects and removes **TikTok reposts** from your account.
+
+## What are TikTok Reposts?
+
+**TikTok reposts** are videos that you've shared from other creators to your own profile. They:
+- Appear with a "repost" label
+- Show the original creator's name
+- Are found in the "Reposts" tab on your profile
+- Are NOT your original content
+
+This tool helps you clean up your profile by removing these shared videos.
 
 ## Features
 
-- 🔍 **Smart Detection**: Uses image hashing and content analysis to identify reposts
-- 🤖 **Automated Removal**: Automatically deletes detected reposts
-- 🔐 **Secure Login**: Safe authentication using your TikTok credentials
+- 🔍 **Smart Detection**: Finds all reposts in your Reposts tab
+- 🤖 **Automated Removal**: Uses TikTok's official "Remove repost" feature
+- 🔐 **Secure Login**: Safe authentication with manual verification support
 - 📊 **Progress Tracking**: Real-time progress updates with detailed logging
-- ⚙️ **Customizable**: Configurable similarity thresholds and batch processing
+- ⚙️ **Manual Selection**: Choose which reposts to remove
+- 🛡️ **Safe Operation**: Only affects reposts, never your original content
 
 ## Installation
 
@@ -39,10 +50,19 @@ from tiktok_repost_remover import TikTokRepostRemover
 remover = TikTokRepostRemover()
 
 # Login with your credentials
-remover.login("your_username", "your_password")
+remover.login("your_username", "your_password", manual_verification=True)
 
-# Scan and remove all reposts
+# Navigate to reposts tab and remove all reposts
 remover.remove_all_reposts()
+```
+
+### Manual Mode (Recommended)
+```bash
+# Use the guided manual mode
+python manual_mode.py
+
+# Or with the main script
+python main.py --no-headless --manual --dry-run
 ```
 
 ### Advanced Usage
@@ -64,11 +84,23 @@ remover.remove_specific_reposts(reposts[:5])  # Remove first 5
 
 ## How It Works
 
-1. **Login**: Securely logs into your TikTok account using Selenium WebDriver
-2. **Video Collection**: Gathers all videos from your profile
-3. **Content Analysis**: Downloads and analyzes video thumbnails and metadata
-4. **Duplicate Detection**: Uses perceptual hashing to identify similar content
-5. **Smart Removal**: Keeps the oldest/most popular version and removes duplicates
+1. **Login**: Securely logs into your TikTok account using browser automation
+2. **Navigate**: Goes to your profile's "Reposts" tab
+3. **Collect**: Gathers all reposted videos (videos you've shared from others)
+4. **Remove**: Uses TikTok's official "Remove repost" feature to clean them up
+5. **Report**: Provides detailed logging of what was removed
+
+## What Gets Removed vs. What Stays
+
+✅ **REMOVED (Reposts):**
+- Videos you've shared from other creators
+- Content with "repost" labels
+- Videos in your "Reposts" tab
+
+❌ **NEVER TOUCHED (Your Content):**
+- Your original videos
+- Videos you created and uploaded
+- Content in your main profile tab
 
 ## Safety Features
 

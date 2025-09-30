@@ -5,6 +5,7 @@ import requests
 from typing import List, Dict, Tuple, Optional
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
@@ -24,6 +25,9 @@ import config
 class TikTokRepostRemover:
     """
     A comprehensive tool for detecting and removing TikTok reposts.
+    
+    Reposts are videos that you've shared from other creators to your own profile.
+    They appear with a "repost" label and are found in the "Repost" tab on your profile.
     """
     
     def __init__(self, similarity_threshold: float = None, batch_size: int = None, headless: bool = None):
@@ -76,24 +80,43 @@ class TikTokRepostRemover:
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--disable-web-security")
+        chrome_options.add_argument("--allow-running-insecure-content")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        # Initialize webdriver
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        # Initialize webdriver with better error handling
+        try:
+            # Try system Chrome first (more reliable)
+            self.logger.info("Attempting to use system Chrome...")
+            self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            self.logger.info("System Chrome initialized successfully")
+            
+        except Exception as e:
+            self.logger.warning(f"System Chrome failed: {e}")
+            # Fallback: try ChromeDriverManager
+            try:
+                self.logger.info("Trying ChromeDriverManager fallback...")
+                service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                self.logger.info("ChromeDriverManager fallback successful")
+            except Exception as e2:
+                self.logger.error(f"ChromeDriverManager fallback failed: {e2}")
+                raise Exception(f"Could not initialize Chrome browser. Please ensure Chrome is installed and try running with --no-headless to debug. Errors: System Chrome: {e}, ChromeDriverManager: {e2}")
         
         self.wait = WebDriverWait(self.driver, config.BROWSER_TIMEOUT)
         self.logger.info("Browser initialized successfully")
     
-    def login(self, username: str, password: str) -> bool:
+    def login(self, username: str, password: str, manual_verification: bool = False) -> bool:
         """
         Login to TikTok account.
         
         Args:
             username: TikTok username or email
             password: TikTok password
+            manual_verification: If True, wait for user to complete verification manually
             
         Returns:
             bool: True if login successful, False otherwise
@@ -107,7 +130,7 @@ class TikTokRepostRemover:
             time.sleep(config.PAGE_LOAD_DELAY)
             
             # Try different login methods
-            login_success = self._try_login_methods(username, password)
+            login_success = self._try_login_methods(username, password, manual_verification)
             
             if login_success:
                 self.logger.info("Login successful")
@@ -120,22 +143,57 @@ class TikTokRepostRemover:
             self.logger.error(f"Login error: {str(e)}")
             return False
     
-    def _try_login_methods(self, username: str, password: str) -> bool:
+    def _try_login_methods(self, username: str, password: str, manual_verification: bool = False) -> bool:
         """Try different login methods."""
         try:
+            # First, try to find the login form
+            self.logger.info("Looking for login form...")
+            
+            # Wait a bit for the page to load completely
+            time.sleep(3)
+            
+            # Look for "Use phone / email / username" option
+            login_options = [
+                "//div[contains(text(), 'Use phone')]",
+                "//div[contains(text(), 'Use email')]", 
+                "//div[contains(text(), 'phone')]",
+                "//a[contains(@href, 'login')]",
+                "//button[contains(text(), 'Log in')]"
+            ]
+            
+            # Try to click on login option
+            for option in login_options:
+                try:
+                    element = self.driver.find_element(By.XPATH, option)
+                    element.click()
+                    self.logger.info(f"Clicked login option: {option}")
+                    time.sleep(2)
+                    break
+                except:
+                    continue
+            
             # Method 1: Look for email/username input
             username_selectors = [
+                "input[placeholder*='email']",
                 "input[placeholder*='Email']",
                 "input[placeholder*='Username']",
+                "input[placeholder*='username']",
                 "input[name='username']",
                 "input[type='email']",
-                "input[type='text']"
+                "input[type='text']",
+                "//input[contains(@placeholder, 'email')]",
+                "//input[contains(@placeholder, 'Email')]",
+                "//input[contains(@placeholder, 'phone')]",
+                "//input[contains(@placeholder, 'Phone')]"
             ]
             
             password_selectors = [
                 "input[placeholder*='Password']",
+                "input[placeholder*='password']",
                 "input[name='password']",
-                "input[type='password']"
+                "input[type='password']",
+                "//input[contains(@placeholder, 'password')]",
+                "//input[contains(@placeholder, 'Password')]"
             ]
             
             username_input = None
@@ -144,7 +202,11 @@ class TikTokRepostRemover:
             # Try to find username input
             for selector in username_selectors:
                 try:
-                    username_input = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+                    if selector.startswith("//"):
+                        username_input = self.wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
+                    else:
+                        username_input = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+                    self.logger.info(f"Found username input with selector: {selector}")
                     break
                 except:
                     continue
@@ -152,17 +214,27 @@ class TikTokRepostRemover:
             # Try to find password input
             for selector in password_selectors:
                 try:
-                    password_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if selector.startswith("//"):
+                        password_input = self.driver.find_element(By.XPATH, selector)
+                    else:
+                        password_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    self.logger.info(f"Found password input with selector: {selector}")
                     break
                 except:
                     continue
             
             if username_input and password_input:
+                self.logger.info("Found login form, entering credentials...")
+                
+                # Clear and enter username
                 username_input.clear()
+                time.sleep(0.5)
                 username_input.send_keys(username)
                 time.sleep(1)
                 
+                # Clear and enter password
                 password_input.clear()
+                time.sleep(0.5)
                 password_input.send_keys(password)
                 time.sleep(1)
                 
@@ -170,28 +242,104 @@ class TikTokRepostRemover:
                 login_button_selectors = [
                     "button[type='submit']",
                     "button[data-e2e='login-button']",
-                    "button:contains('Log in')",
-                    "div[role='button']:contains('Log in')"
+                    "//button[contains(text(), 'Log in')]",
+                    "//button[contains(text(), 'Sign in')]",
+                    "//div[@role='button' and contains(text(), 'Log in')]",
+                    "//button[@type='submit']"
                 ]
                 
+                login_button = None
                 for selector in login_button_selectors:
                     try:
-                        login_button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                        login_button.click()
+                        if selector.startswith("//"):
+                            login_button = self.driver.find_element(By.XPATH, selector)
+                        else:
+                            login_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        self.logger.info(f"Found login button with selector: {selector}")
                         break
                     except:
                         continue
                 
-                # Wait for login to complete
-                time.sleep(5)
+                if login_button:
+                    self.logger.info("Clicking login button...")
+                    login_button.click()
+                    time.sleep(3)
+                    
+                    # Check for verification challenges
+                    if manual_verification or self._check_for_verification():
+                        self.logger.info("Verification challenge detected or manual mode enabled")
+                        if not self.headless:
+                            print("\n🔒 Manual verification required!")
+                            print("Please complete any verification challenges in the browser window.")
+                            print("Press Enter when you have successfully logged in...")
+                            input()
+                        else:
+                            self.logger.error("Verification required but running in headless mode")
+                            return False
+                    
+                    # Wait for login to complete
+                    time.sleep(5)
+                    
+                    # Check if login was successful
+                    return self._verify_login()
+                else:
+                    self.logger.error("Could not find login button")
+            else:
+                self.logger.error(f"Could not find login form. Username input: {username_input is not None}, Password input: {password_input is not None}")
                 
-                # Check if login was successful by looking for profile elements
-                return self._verify_login()
+                # If manual verification is enabled and we can't find the form, let user handle it
+                if manual_verification and not self.headless:
+                    print("\n🔒 Could not find login form automatically.")
+                    print("Please log in manually in the browser window.")
+                    print("Press Enter when you have successfully logged in...")
+                    input()
+                    return self._verify_login()
             
         except Exception as e:
             self.logger.error(f"Login method error: {str(e)}")
+            
+            # Final fallback: manual login if not headless
+            if manual_verification and not self.headless:
+                print(f"\n🔒 Automatic login failed: {str(e)}")
+                print("Please log in manually in the browser window.")
+                print("Press Enter when you have successfully logged in...")
+                input()
+                return self._verify_login()
         
         return False
+    
+    def _check_for_verification(self) -> bool:
+        """Check if there's a verification challenge."""
+        try:
+            verification_indicators = [
+                "//div[contains(text(), 'verify')]",
+                "//div[contains(text(), 'Verify')]",
+                "//div[contains(text(), 'captcha')]",
+                "//div[contains(text(), 'CAPTCHA')]",
+                "//div[contains(text(), 'challenge')]",
+                "//div[contains(text(), 'Challenge')]",
+                "//div[contains(text(), 'robot')]",
+                "//div[contains(text(), 'Robot')]",
+                "[data-testid='captcha']",
+                ".captcha",
+                "#captcha"
+            ]
+            
+            for indicator in verification_indicators:
+                try:
+                    if indicator.startswith("//"):
+                        self.driver.find_element(By.XPATH, indicator)
+                    else:
+                        self.driver.find_element(By.CSS_SELECTOR, indicator)
+                    return True
+                except:
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"Error checking for verification: {str(e)}")
+            return False
     
     def _verify_login(self) -> bool:
         """Verify if login was successful."""
@@ -221,9 +369,9 @@ class TikTokRepostRemover:
         
         return False
     
-    def navigate_to_profile(self, username: str = None) -> bool:
+    def navigate_to_reposts_tab(self, username: str = None) -> bool:
         """
-        Navigate to user's profile page.
+        Navigate to user's reposts tab.
         
         Args:
             username: TikTok username (optional if already logged in)
@@ -254,53 +402,174 @@ class TikTokRepostRemover:
                     self.logger.error("Could not find profile URL")
                     return False
             
+            # Navigate to profile first
             self.driver.get(profile_url)
             time.sleep(config.PAGE_LOAD_DELAY)
             
-            self.logger.info(f"Navigated to profile: {profile_url}")
-            return True
+            # Look for and click the "Reposts" tab
+            repost_tab_selectors = [
+                "//div[contains(text(), 'Reposts')]",
+                "//span[contains(text(), 'Reposts')]", 
+                "//a[contains(text(), 'Reposts')]",
+                "[data-e2e='reposts-tab']",
+                "//div[@role='tab' and contains(text(), 'Reposts')]"
+            ]
             
-        except Exception as e:
-            self.logger.error(f"Profile navigation error: {str(e)}")
-            return False
-    
-    def collect_videos(self) -> List[Dict]:
-        """
-        Collect all videos from the user's profile.
-        
-        Returns:
-            List of video information dictionaries
-        """
-        self.logger.info("Starting video collection")
-        videos = []
-        
-        try:
-            # Scroll to load all videos
-            self._scroll_to_load_all_videos()
-            
-            # Find video elements
-            video_elements = self.driver.find_elements(By.CSS_SELECTOR, 
-                "[data-e2e='user-post-item'], [data-e2e='video-item'], .video-feed-item, .video-item")
-            
-            self.logger.info(f"Found {len(video_elements)} video elements")
-            
-            for i, element in enumerate(tqdm(video_elements, desc="Collecting videos")):
+            repost_tab = None
+            for selector in repost_tab_selectors:
                 try:
-                    video_info = self._extract_video_info(element, i)
-                    if video_info:
-                        videos.append(video_info)
-                        
-                except Exception as e:
-                    self.logger.warning(f"Error processing video {i}: {str(e)}")
+                    if selector.startswith("//"):
+                        repost_tab = self.wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
+                    else:
+                        repost_tab = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+                    self.logger.info(f"Found reposts tab with selector: {selector}")
+                    break
+                except:
                     continue
             
-            self.videos = videos
-            self.logger.info(f"Collected {len(videos)} videos")
-            return videos
+            if repost_tab:
+                repost_tab.click()
+                time.sleep(config.PAGE_LOAD_DELAY)
+                self.logger.info(f"Navigated to reposts tab: {profile_url}")
+                return True
+            else:
+                self.logger.warning("Could not find reposts tab. User may have no reposts or tab structure changed.")
+                return False
             
         except Exception as e:
-            self.logger.error(f"Video collection error: {str(e)}")
-            return videos
+            self.logger.error(f"Reposts navigation error: {str(e)}")
+            return False
+    
+    def collect_reposts(self) -> List[Dict]:
+        """
+        Collect all reposts from the user's reposts tab.
+        
+        Returns:
+            List of repost information dictionaries
+        """
+        self.logger.info("Starting repost collection")
+        reposts = []
+        
+        try:
+            # Scroll to load all reposts
+            self._scroll_to_load_all_videos()
+            
+            # Find repost elements
+            repost_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                "[data-e2e='user-post-item'], [data-e2e='video-item'], .video-feed-item, .video-item")
+            
+            self.logger.info(f"Found {len(repost_elements)} repost elements")
+            
+            for i, element in enumerate(tqdm(repost_elements, desc="Collecting reposts")):
+                try:
+                    repost_info = self._extract_repost_info(element, i)
+                    if repost_info:
+                        reposts.append(repost_info)
+                        
+                except Exception as e:
+                    self.logger.warning(f"Error processing repost {i}: {str(e)}")
+                    continue
+            
+            self.videos = reposts  # Store as videos for compatibility
+            self.logger.info(f"Collected {len(reposts)} reposts")
+            return reposts
+            
+        except Exception as e:
+            self.logger.error(f"Repost collection error: {str(e)}")
+            return reposts
+    
+    def _extract_repost_info(self, element, index: int) -> Optional[Dict]:
+        """Extract information from a repost element."""
+        try:
+            repost_info = {
+                'index': index,
+                'element': element,
+                'url': None,
+                'thumbnail_url': None,
+                'title': None,
+                'original_creator': None,
+                'repost_date': None,
+                'likes': 0,
+                'views': 0,
+                'is_repost': True  # Mark as repost
+            }
+            
+            # Get repost URL
+            try:
+                link_element = element.find_element(By.TAG_NAME, "a")
+                repost_info['url'] = link_element.get_attribute('href')
+            except:
+                pass
+            
+            # Get thumbnail URL
+            try:
+                img_element = element.find_element(By.TAG_NAME, "img")
+                repost_info['thumbnail_url'] = img_element.get_attribute('src')
+            except:
+                pass
+            
+            # Get repost title/description
+            try:
+                title_selectors = [
+                    "[data-e2e='video-desc']",
+                    ".video-meta-title",
+                    "img[alt]"
+                ]
+                
+                for selector in title_selectors:
+                    try:
+                        title_element = element.find_element(By.CSS_SELECTOR, selector)
+                        repost_info['title'] = title_element.get_attribute('alt') or title_element.text
+                        if repost_info['title']:
+                            break
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Try to find original creator info
+            try:
+                creator_selectors = [
+                    "[data-e2e='video-author']",
+                    ".video-author",
+                    ".original-creator",
+                    "//span[contains(text(), '@')]"
+                ]
+                
+                for selector in creator_selectors:
+                    try:
+                        if selector.startswith("//"):
+                            creator_element = element.find_element(By.XPATH, selector)
+                        else:
+                            creator_element = element.find_element(By.CSS_SELECTOR, selector)
+                        creator_text = creator_element.text
+                        if '@' in creator_text:
+                            repost_info['original_creator'] = creator_text
+                            break
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Get engagement metrics
+            try:
+                stats_elements = element.find_elements(By.CSS_SELECTOR, 
+                    "[data-e2e*='like'], [data-e2e*='view'], .video-count")
+                
+                for stat_element in stats_elements:
+                    text = stat_element.text
+                    if 'like' in stat_element.get_attribute('data-e2e') or '♥' in text:
+                        repost_info['likes'] = self._parse_count(text)
+                    elif 'view' in stat_element.get_attribute('data-e2e') or 'view' in text.lower():
+                        repost_info['views'] = self._parse_count(text)
+            except:
+                pass
+            
+            return repost_info
+            
+        except Exception as e:
+            self.logger.warning(f"Error extracting repost info: {str(e)}")
+            return None
     
     def _scroll_to_load_all_videos(self):
         """Scroll down to load all videos."""
@@ -507,134 +776,216 @@ class TikTokRepostRemover:
     
     def remove_all_reposts(self, dry_run: bool = False) -> List[Dict]:
         """
-        Main method to scan and remove all reposts.
+        Main method to scan and remove all TikTok reposts.
         
         Args:
-            dry_run: If True, only scan and report, don't actually delete
+            dry_run: If True, only scan and report, don't actually remove
             
         Returns:
-            List of removed videos
+            List of removed reposts
         """
         self.logger.info(f"Starting repost removal (dry_run={dry_run})")
         
-        # Navigate to profile
-        if not self.navigate_to_profile():
-            raise Exception("Failed to navigate to profile")
+        # Navigate to reposts tab
+        if not self.navigate_to_reposts_tab():
+            raise Exception("Failed to navigate to reposts tab")
         
-        # Collect videos
-        videos = self.collect_videos()
-        if not videos:
-            self.logger.warning("No videos found")
+        # Collect reposts
+        reposts = self.collect_reposts()
+        if not reposts:
+            self.logger.info("No reposts found")
             return []
         
-        # Analyze for duplicates
-        duplicates = self.analyze_videos()
-        if not duplicates:
-            self.logger.info("No duplicates found")
-            return []
+        # Remove reposts
+        removed_reposts = []
         
-        # Remove duplicates
-        removed_videos = []
+        self.logger.info(f"Found {len(reposts)} reposts to process")
         
-        for group_name, duplicate_group in duplicates.items():
-            self.logger.info(f"Processing {group_name} with {len(duplicate_group)} duplicates")
-            
-            # Sort by engagement (keep the one with most likes/views)
-            duplicate_group.sort(key=lambda x: (x.get('likes', 0) + x.get('views', 0)), reverse=True)
-            
-            # Keep the first (most popular) and remove the rest
-            to_remove = duplicate_group[1:]
-            
-            if not dry_run:
-                for video in to_remove:
-                    if self._delete_video(video):
-                        removed_videos.append(video)
-                        self.deleted_videos.append(video)
-            else:
-                self.logger.info(f"Would remove {len(to_remove)} videos from {group_name}")
-                removed_videos.extend(to_remove)
+        if not dry_run:
+            for repost in reposts:
+                self.logger.info(f"Processing repost from @{repost.get('original_creator', 'Unknown')}: {repost.get('title', 'Untitled')[:50]}")
+                
+                if self._delete_repost(repost):
+                    removed_reposts.append(repost)
+                    self.deleted_videos.append(repost)  # Keep for compatibility
+                    time.sleep(config.DELAY_BETWEEN_ACTIONS)  # Respect rate limits
+        else:
+            self.logger.info(f"Would remove {len(reposts)} reposts")
+            removed_reposts = reposts
         
-        self.logger.info(f"Removed {len(removed_videos)} reposts")
-        return removed_videos
+        self.logger.info(f"Removed {len(removed_reposts)} reposts")
+        return removed_reposts
     
-    def _delete_video(self, video: Dict) -> bool:
-        """Delete a specific video."""
+    def _delete_repost(self, repost: Dict) -> bool:
+        """Delete a specific repost using TikTok's remove repost feature."""
         try:
-            self.logger.info(f"Deleting video: {video.get('url', 'Unknown URL')}")
+            self.logger.info(f"Removing repost: {repost.get('url', 'Unknown URL')}")
             
-            # Navigate to video
-            if video.get('url'):
-                self.driver.get(video['url'])
+            # Navigate to repost
+            if repost.get('url'):
+                self.driver.get(repost['url'])
                 time.sleep(config.PAGE_LOAD_DELAY)
             
-            # Find and click options menu
-            options_selectors = [
-                "[data-e2e='video-more-button']",
-                "[data-e2e='browse-more']",
-                "button[aria-label='More']",
-                ".more-button",
-                "button:contains('⋯')"
-            ]
+            # Method 1: Try Share button -> Remove repost
+            try:
+                share_selectors = [
+                    "[data-e2e='video-share-button']",
+                    "[data-e2e='browse-share']",
+                    "button[aria-label*='Share']",
+                    ".share-button",
+                    "//button[contains(@aria-label, 'Share')]"
+                ]
+                
+                share_button = None
+                for selector in share_selectors:
+                    try:
+                        if selector.startswith("//"):
+                            share_button = self.wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
+                        else:
+                            share_button = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+                        break
+                    except:
+                        continue
+                
+                if share_button:
+                    share_button.click()
+                    time.sleep(1)
+                    
+                    # Look for "Remove repost" option
+                    remove_repost_selectors = [
+                        "//div[contains(text(), 'Remove repost')]",
+                        "//span[contains(text(), 'Remove repost')]",
+                        "[data-e2e='remove-repost']",
+                        "//button[contains(text(), 'Remove repost')]"
+                    ]
+                    
+                    for selector in remove_repost_selectors:
+                        try:
+                            if selector.startswith("//"):
+                                remove_button = self.driver.find_element(By.XPATH, selector)
+                            else:
+                                remove_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            remove_button.click()
+                            time.sleep(1)
+                            
+                            self.logger.info("Repost removed via Share -> Remove repost")
+                            return True
+                        except:
+                            continue
             
-            options_button = None
-            for selector in options_selectors:
-                try:
-                    options_button = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-                    break
-                except:
-                    continue
+            except Exception as e:
+                self.logger.warning(f"Share button method failed: {str(e)}")
             
-            if not options_button:
-                self.logger.error("Could not find options menu")
-                return False
+            # Method 2: Try long press -> Remove repost
+            try:
+                # Find the video element
+                video_selectors = [
+                    "[data-e2e='video-player']",
+                    "video",
+                    ".video-container",
+                    "[data-e2e='browse-video']"
+                ]
+                
+                video_element = None
+                for selector in video_selectors:
+                    try:
+                        video_element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        break
+                    except:
+                        continue
+                
+                if video_element:
+                    # Long press on video
+                    actions = ActionChains(self.driver)
+                    actions.click_and_hold(video_element).perform()
+                    time.sleep(2)
+                    actions.release().perform()
+                    
+                    # Look for context menu with remove repost
+                    remove_repost_selectors = [
+                        "//div[contains(text(), 'Remove repost')]",
+                        "//span[contains(text(), 'Remove repost')]",
+                        "[data-e2e='remove-repost']"
+                    ]
+                    
+                    for selector in remove_repost_selectors:
+                        try:
+                            if selector.startswith("//"):
+                                remove_button = self.driver.find_element(By.XPATH, selector)
+                            else:
+                                remove_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            remove_button.click()
+                            time.sleep(1)
+                            
+                            self.logger.info("Repost removed via long press -> Remove repost")
+                            return True
+                        except:
+                            continue
             
-            options_button.click()
-            time.sleep(1)
+            except Exception as e:
+                self.logger.warning(f"Long press method failed: {str(e)}")
             
-            # Find and click delete button
-            delete_selectors = [
-                "[data-e2e='delete-post']",
-                "button:contains('Delete')",
-                "div:contains('Delete')",
-                "[aria-label*='Delete']"
-            ]
+            # Method 3: Try profile photo -> Reposted -> Remove repost
+            try:
+                profile_photo_selectors = [
+                    "[data-e2e='video-avatar']",
+                    ".video-avatar",
+                    "img[alt*='avatar']",
+                    ".user-avatar"
+                ]
+                
+                for selector in profile_photo_selectors:
+                    try:
+                        profile_photo = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        profile_photo.click()
+                        time.sleep(1)
+                        
+                        # Look for "Reposted" indicator
+                        reposted_selectors = [
+                            "//div[contains(text(), 'Reposted')]",
+                            "//span[contains(text(), 'Reposted')]",
+                            "[data-e2e='reposted-indicator']"
+                        ]
+                        
+                        for repost_selector in reposted_selectors:
+                            try:
+                                if repost_selector.startswith("//"):
+                                    reposted_element = self.driver.find_element(By.XPATH, repost_selector)
+                                else:
+                                    reposted_element = self.driver.find_element(By.CSS_SELECTOR, repost_selector)
+                                reposted_element.click()
+                                time.sleep(1)
+                                
+                                # Look for remove repost option
+                                remove_selectors = [
+                                    "//div[contains(text(), 'Remove repost')]",
+                                    "//span[contains(text(), 'Remove repost')]"
+                                ]
+                                
+                                for remove_selector in remove_selectors:
+                                    try:
+                                        remove_button = self.driver.find_element(By.XPATH, remove_selector)
+                                        remove_button.click()
+                                        time.sleep(1)
+                                        
+                                        self.logger.info("Repost removed via profile photo -> Reposted -> Remove repost")
+                                        return True
+                                    except:
+                                        continue
+                            except:
+                                continue
+                        break
+                    except:
+                        continue
             
-            delete_button = None
-            for selector in delete_selectors:
-                try:
-                    delete_button = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-                    break
-                except:
-                    continue
+            except Exception as e:
+                self.logger.warning(f"Profile photo method failed: {str(e)}")
             
-            if not delete_button:
-                self.logger.error("Could not find delete button")
-                return False
-            
-            delete_button.click()
-            time.sleep(1)
-            
-            # Confirm deletion
-            confirm_selectors = [
-                "button:contains('Delete')",
-                "button:contains('Confirm')",
-                "[data-e2e='confirm-delete']"
-            ]
-            
-            for selector in confirm_selectors:
-                try:
-                    confirm_button = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-                    confirm_button.click()
-                    break
-                except:
-                    continue
-            
-            time.sleep(config.DELAY_BETWEEN_ACTIONS)
-            self.logger.info("Video deleted successfully")
-            return True
+            self.logger.error("All removal methods failed")
+            return False
             
         except Exception as e:
-            self.logger.error(f"Error deleting video: {str(e)}")
+            self.logger.error(f"Error removing repost: {str(e)}")
             return False
     
     def scan_for_reposts(self, dry_run: bool = True) -> List[Dict]:
@@ -706,8 +1057,23 @@ class TikTokRepostRemover:
             self.driver.quit()
             self.logger.info("Browser closed")
     
+    def keep_browser_open(self):
+        """Keep the browser open for manual use."""
+        if self.driver:
+            self.logger.info("Browser will remain open for manual use")
+            print("🌐 Browser is staying open. You can:")
+            print("- Verify the changes on TikTok")
+            print("- Navigate to other parts of the site")
+            print("- Close the browser window manually when done")
+        else:
+            self.logger.warning("No browser session to keep open")
+    
     def __enter__(self):
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        # Don't automatically close if we want to keep browser open
+        if hasattr(self, '_keep_open') and self._keep_open:
+            self.keep_browser_open()
+        else:
+            self.close()

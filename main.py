@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--threshold', '-t', type=float, default=0.9, help='Similarity threshold (0.0-1.0)')
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
     parser.add_argument('--no-headless', action='store_true', help='Show browser window')
+    parser.add_argument('--manual', '-m', action='store_true', help='Enable manual verification for login')
     parser.add_argument('--config', '-c', help='Load credentials from .env file')
     
     args = parser.parse_args()
@@ -55,6 +56,7 @@ def main():
     print(f"   Username: {username}")
     print(f"   Threshold: {args.threshold}")
     print(f"   Headless: {headless}")
+    print(f"   Manual verification: {args.manual}")
     print(f"   Dry Run: {args.dry_run}")
     print()
     
@@ -67,7 +69,7 @@ def main():
             
             # Login
             print("🔐 Logging in...")
-            if not remover.login(username, password):
+            if not remover.login(username, password, manual_verification=args.manual):
                 print("❌ Login failed!")
                 sys.exit(1)
             
