@@ -242,10 +242,15 @@ class TikTokRepostRemover:
                 login_button_selectors = [
                     "button[type='submit']",
                     "button[data-e2e='login-button']",
+                    "button[data-testid='login-button']",
                     "//button[contains(text(), 'Log in')]",
                     "//button[contains(text(), 'Sign in')]",
+                    "//button[contains(text(), 'Login')]",
                     "//div[@role='button' and contains(text(), 'Log in')]",
-                    "//button[@type='submit']"
+                    "//button[@type='submit']",
+                    "//input[@type='submit']",
+                    "button:not([disabled])[type='submit']",
+                    "button:not([disabled])[data-e2e='login-button']"
                 ]
                 
                 login_button = None
@@ -255,14 +260,39 @@ class TikTokRepostRemover:
                             login_button = self.driver.find_element(By.XPATH, selector)
                         else:
                             login_button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                        self.logger.info(f"Found login button with selector: {selector}")
-                        break
+                        
+                        # Check if button is enabled
+                        if login_button.is_enabled():
+                            self.logger.info(f"Found login button with selector: {selector}")
+                            break
+                        else:
+                            self.logger.warning(f"Login button found but disabled: {selector}")
+                            login_button = None
                     except:
                         continue
                 
                 if login_button:
                     self.logger.info("Clicking login button...")
-                    login_button.click()
+                    
+                    # Wait for button to be enabled if it's currently disabled
+                    if not login_button.is_enabled():
+                        self.logger.info("Login button is disabled, waiting for it to become enabled...")
+                        try:
+                            self.wait.until(lambda driver: login_button.is_enabled())
+                        except:
+                            self.logger.warning("Login button remained disabled, proceeding anyway...")
+                    
+                    # Try multiple click methods
+                    try:
+                        login_button.click()
+                    except Exception as click_error:
+                        self.logger.warning(f"Direct click failed: {click_error}, trying JavaScript click...")
+                        try:
+                            self.driver.execute_script("arguments[0].click();", login_button)
+                        except Exception as js_error:
+                            self.logger.error(f"JavaScript click also failed: {js_error}")
+                            return False
+                    
                     time.sleep(3)
                     
                     # Check for verification challenges
@@ -283,7 +313,7 @@ class TikTokRepostRemover:
                     # Check if login was successful
                     return self._verify_login()
                 else:
-                    self.logger.error("Could not find login button")
+                    self.logger.error("Could not find enabled login button")
             else:
                 self.logger.error(f"Could not find login form. Username input: {username_input is not None}, Password input: {password_input is not None}")
                 
@@ -344,29 +374,61 @@ class TikTokRepostRemover:
     def _verify_login(self) -> bool:
         """Verify if login was successful."""
         try:
+            # Wait a moment for page to load
+            time.sleep(2)
+            
             # Look for elements that indicate successful login
             success_indicators = [
                 "[data-e2e='profile-icon']",
+                "[data-e2e='nav-profile']",
+                "[data-e2e='nav-avatar']",
                 "img[alt*='avatar']",
                 "[href*='/profile']",
-                "a[href*='/@']"
+                "a[href*='/@']",
+                "[data-e2e='user-title']",
+                "[data-e2e='user-subtitle']",
+                ".user-info",
+                ".profile-info"
             ]
             
             for indicator in success_indicators:
                 try:
                     self.driver.find_element(By.CSS_SELECTOR, indicator)
+                    self.logger.info(f"Login verified with indicator: {indicator}")
                     return True
                 except:
                     continue
             
-            # Check URL for profile page
+            # Check URL for profile page or main feed
             current_url = self.driver.current_url
-            if "/profile" in current_url or "/@" in current_url:
-                return True
+            if "/profile" in current_url or "/@" in current_url or "tiktok.com" in current_url:
+                # Additional check: look for feed content or navigation
+                try:
+                    feed_indicators = [
+                        "[data-e2e='video-player']",
+                        "[data-e2e='feed-video']",
+                        ".video-feed",
+                        ".feed-item"
+                    ]
+                    for feed_indicator in feed_indicators:
+                        try:
+                            self.driver.find_element(By.CSS_SELECTOR, feed_indicator)
+                            self.logger.info("Login verified - found feed content")
+                            return True
+                        except:
+                            continue
+                except:
+                    pass
+                
+                # If we're on a TikTok page and not on login page, assume success
+                if "login" not in current_url.lower():
+                    self.logger.info("Login verified - on TikTok page (not login)")
+                    return True
                 
         except Exception as e:
             self.logger.error(f"Login verification error: {str(e)}")
         
+        self.logger.warning("Login verification failed - may still be on login page")
         return False
     
     def navigate_to_reposts_tab(self, username: str = None) -> bool:
@@ -383,22 +445,70 @@ class TikTokRepostRemover:
             if username:
                 profile_url = f"{config.TIKTOK_BASE_URL}/@{username}"
             else:
-                # Try to find profile link
+                # Try multiple methods to find profile URL
+                profile_url = None
+                
+                # Method 1: Look for profile link in navigation
                 profile_elements = [
                     "[data-e2e='profile-icon']",
+                    "[data-e2e='nav-profile']",
                     "a[href*='/profile']",
-                    "img[alt*='avatar']"
+                    "a[href*='/@']",
+                    "img[alt*='avatar']",
+                    "[data-e2e='nav-avatar']",
+                    "//a[contains(@href, '/@')]"
                 ]
                 
                 for element_selector in profile_elements:
                     try:
-                        element = self.driver.find_element(By.CSS_SELECTOR, element_selector)
+                        if element_selector.startswith("//"):
+                            element = self.driver.find_element(By.XPATH, element_selector)
+                        else:
+                            element = self.driver.find_element(By.CSS_SELECTOR, element_selector)
                         profile_url = element.get_attribute('href')
-                        if profile_url:
+                        if profile_url and '/@' in profile_url:
+                            self.logger.info(f"Found profile URL: {profile_url}")
                             break
                     except:
                         continue
-                else:
+                
+                # Method 2: Try to construct profile URL from current page or stored username
+                if not profile_url:
+                    try:
+                        current_url = self.driver.current_url
+                        if '/@' in current_url:
+                            profile_url = current_url.split('/@')[0] + '/@' + current_url.split('/@')[1].split('/')[0]
+                            self.logger.info(f"Constructed profile URL from current page: {profile_url}")
+                    except:
+                        pass
+                
+                # Method 3: Try to find username from page elements
+                if not profile_url:
+                    username_selectors = [
+                        "[data-e2e='user-title']",
+                        "[data-e2e='user-subtitle']",
+                        ".user-info h3",
+                        ".profile-info h1",
+                        "//h1[@data-e2e='user-title']",
+                        "//h2[@data-e2e='user-subtitle']"
+                    ]
+                    
+                    for selector in username_selectors:
+                        try:
+                            if selector.startswith("//"):
+                                element = self.driver.find_element(By.XPATH, selector)
+                            else:
+                                element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            username_text = element.text.strip()
+                            if username_text and '@' in username_text:
+                                username_clean = username_text.replace('@', '')
+                                profile_url = f"{config.TIKTOK_BASE_URL}/@{username_clean}"
+                                self.logger.info(f"Constructed profile URL from username element: {profile_url}")
+                                break
+                        except:
+                            continue
+                
+                if not profile_url:
                     self.logger.error("Could not find profile URL")
                     return False
             
@@ -406,13 +516,27 @@ class TikTokRepostRemover:
             self.driver.get(profile_url)
             time.sleep(config.PAGE_LOAD_DELAY)
             
+            # Wait for profile page to load
+            try:
+                self.wait.until(lambda driver: driver.execute_script("return document.readyState") == "complete")
+                time.sleep(2)
+            except:
+                pass
+            
             # Look for and click the "Reposts" tab
             repost_tab_selectors = [
                 "//div[contains(text(), 'Reposts')]",
                 "//span[contains(text(), 'Reposts')]", 
                 "//a[contains(text(), 'Reposts')]",
+                "//button[contains(text(), 'Reposts')]",
                 "[data-e2e='reposts-tab']",
-                "//div[@role='tab' and contains(text(), 'Reposts')]"
+                "[data-e2e='user-reposts']",
+                "//div[@role='tab' and contains(text(), 'Reposts')]",
+                "//div[contains(@class, 'tab') and contains(text(), 'Reposts')]",
+                "//span[contains(@class, 'tab') and contains(text(), 'Reposts')]",
+                "//a[contains(@href, 'repost')]",
+                "//div[text()='Reposts']",
+                "//span[text()='Reposts']"
             ]
             
             repost_tab = None
@@ -434,6 +558,24 @@ class TikTokRepostRemover:
                 return True
             else:
                 self.logger.warning("Could not find reposts tab. User may have no reposts or tab structure changed.")
+                # Try scrolling to see if reposts tab appears
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)
+                
+                # Try again after scrolling
+                for selector in repost_tab_selectors:
+                    try:
+                        if selector.startswith("//"):
+                            repost_tab = self.driver.find_element(By.XPATH, selector)
+                        else:
+                            repost_tab = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        repost_tab.click()
+                        time.sleep(config.PAGE_LOAD_DELAY)
+                        self.logger.info(f"Found reposts tab after scrolling with selector: {selector}")
+                        return True
+                    except:
+                        continue
+                
                 return False
             
         except Exception as e:
